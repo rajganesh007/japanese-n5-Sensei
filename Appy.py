@@ -1,14 +1,19 @@
 import streamlit as st
 from google import genai
+from google.api_core import exceptions
 from google.genai import types
 from PyPDF2 import PdfReader
 import re
+import time
+import io
 
 st.set_page_config(page_title="N5 Voice Sensei", page_icon="🎤")
 st.title("🎤 N5 Japanese Voice Tutor")
 
+# --- Initialization ---
 if 'api_key' not in st.session_state: st.session_state.api_key = ""
 if 'current_question' not in st.session_state: st.session_state.current_question = ""
+if 'feedback' not in st.session_state: st.session_state.feedback = ""
 
 with st.sidebar:
     st.header("Setup")
@@ -17,104 +22,111 @@ with st.sidebar:
 
 @st.cache_data
 def get_pdf_text(file_buffer):
-    reader = PdfReader(file_buffer)
-    return "".join([p.extract_text() for p in reader.pages[:10]])
+    try:
+        reader = PdfReader(file_buffer)
+        # Japanese text often needs a cleaner join to avoid broken kanji
+        text = " ".join([p.extract_text() for p in reader.pages[:5]])
+        return re.sub(r'\s+', ' ', text) # Remove excessive whitespace/newlines
+    except Exception as e:
+        return f"Error reading PDF: {e}"
 
 import streamlit.components.v1 as components
 
 def play_audio(client, text, slow=True):
-    """Hybrid TTS: Tries Gemini first, falls back to Browser Voice."""
+    """Hybrid TTS: Gemini Flash 2.5 (if supported) -> Browser Fallback."""
     try:
-        # 1. Attempt Gemini Voice (High Quality)
+        # Note: AUDIO output in generate_content requires specific model support 
+        # For 2026, we ensure the prompt asks for speech synthesis specifically
         audio_res = client.models.generate_content(
             model='gemini-2.5-flash', 
-            contents=f"Say this very slowly in Japanese: {text}",
+            contents=f"Read this Japanese text clearly: {text}",
             config=types.GenerateContentConfig(response_modalities=['AUDIO'])
         )
         if audio_res.candidates and audio_res.candidates[0].content.parts[0].inline_data:
-            st.audio(audio_res.candidates[0].content.parts[0].inline_data.data, format="audio/wav", autoplay=True)
+            st.audio(audio_res.candidates[0].content.parts[0].inline_data.data, format="audio/wav")
             return
             
-    except Exception as e:
-        if "429" in str(e):
-            st.warning("Sensei is tired! Switching to system voice...")
-            # 2. Fallback: Use the browser's built-in Japanese voice (Unlimited Quota)
-            js_code = f"""
-            <script>
-            var msg = new SpeechSynthesisUtterance('{text}');
-            msg.lang = 'ja-JP';
-            msg.rate = {0.6 if slow else 1.0};
-            window.speechSynthesis.speak(msg);
-            </script>
-            """
-            components.html(js_code, height=0)
-        else:
-            st.error(f"Voice Error: {e}")
+    except Exception:
+        # Fallback: JavaScript Browser Speech (Very reliable for Japanese)
+        rate = 0.7 if slow else 1.0
+        js_code = f"""
+        <script>
+        var msg = new SpeechSynthesisUtterance({repr(text)});
+        msg.lang = 'ja-JP';
+        msg.rate = {rate};
+        window.speechSynthesis.speak(msg);
+        </script>
+        """
+        components.html(js_code, height=0)
+
+# --- Main App Logic ---
 if st.session_state.api_key and uploaded_file:
-    # 2026 Setup: Simplified client. The SDK defaults to v1beta 
-    # for gemini-2.5 models if version is not specified.
     client = genai.Client(api_key=st.session_state.api_key)
-    
-    vocab_text = get_pdf_text(uploaded_file)
+    vocab_context = get_pdf_text(uploaded_file)
 
     if st.button("Sensei, ask me a question!"):
-        # These lines MUST be indented further than the 'if'
-        with st.spinner("Sensei is writing..."):
-            try:
-                txt_prompt = f"Using {vocab_text[:1000]}, ask a short N5 Japanese question. Format: Japanese, Romaji, English."
-                # We use Lite for the text to save your quota
-                response = client.models.generate_content(
-                    model='gemini-2.5-flash-lite', 
-                    contents=txt_prompt
-                )
-                st.session_state.current_question = response.text
-                st.rerun()
-            except Exception as e:
-                st.error(f"Text Error: {e}")
+        with st.spinner("Sensei is thinking..."):
+            # Stronger prompt to ensure the regex works later
+            txt_prompt = f"""
+            Context: {vocab_context[:1500]}
+            Task: Ask a simple N5 Japanese question based on the context.
+            Format your response exactly like this:
+            Japanese: [Japanese Text]
+            Romaji: [Romaji Text]
+            English: [English Translation]
+            """
+            response = client.models.generate_content(
+                model='gemini-2.5-flash-lite', 
+                contents=txt_prompt
+            )
+            st.session_state.current_question = response.text
+            st.session_state.feedback = "" # Clear old feedback
+            st.rerun()
 
     if st.session_state.current_question:
+        st.markdown("### 📖 Current Question")
         st.info(st.session_state.current_question)
+        
         if st.button("🔈 Hear Question"):
-            # Improved regex to grab the Japanese text more safely
-            match = re.search(r"Japanese:\s*(.*)", st.session_state.current_question)
-            jap_line = match.group(1) if match else st.session_state.current_question.split('\n')[0]
-            play_audio(client, jap_line, slow=True)
+            # Improved extraction logic
+            jap_match = re.search(r"Japanese:\s*(.*)", st.session_state.current_question)
+            text_to_speak = jap_match.group(1) if jap_match else st.session_state.current_question
+            play_audio(client, text_to_speak)
 
-    st.divider()
-    st.subheader("Your Answer")
-    student_audio = st.audio_input("Record response", key="mic")
+        st.divider()
+        st.subheader("Your Answer")
+        # Ensure student_audio is captured correctly
+        student_audio = st.audio_input("Record your Japanese response")
 
-    if student_audio is not None:
-        with st.spinner("Sensei is listening..."):
-            try:
-                # 2026 Strategy: Use 2.5-Flash-Lite for high-quota audio analysis.
-                # It now supports multimodal (audio) inputs in the v1beta API.
-                def analyze_with_retry(attempts=3):
-                    for i in range(attempts):
-                        try:
-                            # Re-read buffer each time to avoid 'Seek' errors
-                            student_audio.seek(0) 
-                            return client.models.generate_content(
-                                model='gemini-2.5-flash-lite', 
-                                contents=[
-                                    f"Question: {st.session_state.current_question}. Correct the student's Japanese.",
-                                    types.Part.from_bytes(data=student_audio.read(), mime_type="audio/wav")
-                                ]
-                            )
-                        except Exception as e:
-                            if "429" in str(e) and i < attempts - 1:
-                                time.sleep(5) # Standard wait for the 2026 minute-limit
-                                continue
-                            raise e
-
-                feedback_res = analyze_with_retry()
-                st.success("Feedback:")
-                st.write(feedback_res.text)
-                
-                # Feedback Audio
-                sentences = re.split(r'[.!?！？]', feedback_res.text)
-                if sentences and sentences[0].strip():
-                    play_audio(client, sentences[0], slow=False)
+        if student_audio:
+            if st.button("Submit Answer"):
+                with st.spinner("Sensei is checking your pronunciation..."):
+                    audio_bytes = student_audio.read()
                     
-            except Exception as e:
-                st.error(f"Analysis Error: {e}")
+                    analysis_prompt = f"""
+                    The student is answering the question: {st.session_state.current_question}
+                    1. Transcribe their Japanese.
+                    2. Evaluate their grammar and pronunciation.
+                    3. Provide a response in: Japanese, Romaji, and English.
+                    """
+                    
+                    try:
+                        feedback_res = client.models.generate_content(
+                            model='gemini-2.5-flash-lite', 
+                            contents=[
+                                analysis_prompt,
+                                types.Part.from_bytes(data=audio_bytes, mime_type="audio/wav")
+                            ]
+                        )
+                        st.session_state.feedback = feedback_res.text
+                    except Exception as e:
+                        st.error(f"Sensei couldn't hear you clearly: {e}")
+
+    if st.session_state.feedback:
+        st.success("Sensei's Feedback:")
+        st.write(st.session_state.feedback)
+        if st.button("🔈 Hear Feedback"):
+            # Speak only the first sentence of the feedback
+            fb_match = re.search(r"Japanese:\s*(.*)", st.session_state.feedback)
+            fb_text = fb_match.group(1) if fb_match else st.session_state.feedback.split('\n')[0]
+            play_audio(client, fb_text, slow=False)
