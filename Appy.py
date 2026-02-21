@@ -7,7 +7,7 @@ import streamlit.components.v1 as components
 
 # 1. Page Configuration
 st.set_page_config(page_title="N5 Voice Sensei", page_icon="🎤")
-st.title("🎤 N5 Japanese Voice Tutor")
+st.title("🎤 N5 Japanese Voice Tutor (No English)")
 
 # 2. State Management
 if 'api_key' not in st.session_state: st.session_state.api_key = ""
@@ -30,7 +30,7 @@ def get_pdf_text(file_buffer):
     except Exception:
         return ""
 
-# 5. Helper: Voice Playback (Browser-based for unlimited usage)
+# 5. Helper: Voice Playback
 def play_audio(text, slow=True):
     rate = 0.6 if slow else 1.0
     safe_text = text.replace("'", "\\'")
@@ -56,10 +56,12 @@ if st.session_state.api_key and uploaded_file:
         else:
             with st.spinner("Sensei is thinking..."):
                 try:
+                    # PROMPT EDIT: Strictly Japanese and Romaji only
                     txt_prompt = (
                         f"Context: {vocab_text[:1500]}\n\n"
-                        "Task: Ask an N5 Japanese question. Use the format:\n"
-                        "Japanese: [sentence]\nRomaji: [sentence]\nEnglish: [sentence]"
+                        "Task: Ask an N5 Japanese question. DO NOT use English.\n"
+                        "Format your response exactly as:\n"
+                        "Japanese: [sentence]\nRomaji: [sentence]"
                     )
                     response = client.models.generate_content(
                         model='gemini-2.0-flash', 
@@ -81,19 +83,19 @@ if st.session_state.api_key and uploaded_file:
 
         st.divider()
         st.subheader("Your Answer")
-        
-        # New for 2026: st.audio_input returns a BytesIO-like object in audio/wav
         student_audio = st.audio_input("Record your response")
 
         if student_audio:
             if st.button("Evaluate My Answer"):
                 with st.spinner("Sensei is listening..."):
                     try:
-                        # Multimodal request: Text + Audio bytes
+                        # PROMPT EDIT: Evaluation strictly in Japanese and Romaji
                         feedback_res = client.models.generate_content(
                             model='gemini-2.0-flash', 
                             contents=[
-                                f"Question: {st.session_state.current_question}. Evaluate student audio response.",
+                                (f"Question was: {st.session_state.current_question}. "
+                                 "Evaluate student audio response. Do not use any English. "
+                                 "Provide feedback using the format:\nJapanese: [feedback]\nRomaji: [feedback]"),
                                 types.Part.from_bytes(data=student_audio.read(), mime_type="audio/wav")
                             ]
                         )
@@ -107,5 +109,5 @@ if st.session_state.api_key and uploaded_file:
         st.write(st.session_state.feedback)
         if st.button("🔈 Hear Feedback"):
             fb_match = re.search(r"Japanese:\s*(.*)", st.session_state.feedback)
-            fb_text = fb_match.group(1) if fb_match else st.session_state.feedback[:100]
+            fb_text = fb_match.group(1) if fb_match else st.session_state.feedback.split('\n')[0]
             play_audio(fb_text, slow=False)
