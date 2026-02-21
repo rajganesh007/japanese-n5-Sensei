@@ -22,13 +22,14 @@ def get_pdf_text(file_buffer):
 
 def play_audio(client, text, slow=True):
     try:
-        pace = "very slowly" if slow else "naturally"
-        # SWITCHED TO LITE for higher quota
+        pace = "very slowly" if slow else "at a natural pace"
+        # 2026 FIX: Use the 'full' Flash model ONLY for audio tasks.
+        # This model supports the AUDIO modality.
         audio_res = client.models.generate_content(
-            model='gemini-2.5-flash-lite', 
+            model='gemini-2.5-flash', 
             contents=f"Say this {pace} in Japanese: {text}",
             config=types.GenerateContentConfig(
-                response_modalities=['TEXT', 'AUDIO'] 
+                response_modalities=['AUDIO'] 
             )
         )
         
@@ -37,9 +38,12 @@ def play_audio(client, text, slow=True):
                 if part.inline_data:
                     st.audio(part.inline_data.data, format="audio/wav", autoplay=True)
                     return
-        st.warning("Voice is currently unavailable. Displaying text instead.")
+        st.warning("Voice is currently unavailable.")
     except Exception as e:
-        st.error(f"Voice Error (Likely Region/Quota): {str(e)}")
+        if "429" in str(e):
+            st.error("Audio quota reached. Sensei's voice needs a break, but you can still read the text!")
+        else:
+            st.error(f"Voice Error: {str(e)}")
 
 if st.session_state.api_key and uploaded_file:
     # 2026 Setup: Simplified client. The SDK defaults to v1beta 
@@ -49,16 +53,14 @@ if st.session_state.api_key and uploaded_file:
     vocab_text = get_pdf_text(uploaded_file)
 
     if st.button("Sensei, ask me a question!"):
-        with st.spinner("Sensei is writing..."):
-            try:
-                txt_prompt = f"Using {vocab_text[:1000]}, ask a short N5 Japanese question. Format: Japanese, Romaji, English."
-                # SWITCHED TO LITE here too
-                response = client.models.generate_content(
-                    model='gemini-2.5-flash-lite', 
-                    contents=txt_prompt
-                )
-                st.session_state.current_question = response.text
-                st.rerun()
+    with st.spinner("Sensei is writing..."):
+        # Use LITE here (Text only) to save your quota
+        response = client.models.generate_content(
+            model='gemini-2.5-flash-lite', 
+            contents=f"Context: {vocab_text[:1000]}. Ask a short N5 Japanese question."
+        )
+        st.session_state.current_question = response.text
+        st.rerun()
             except Exception as e:
                 if "429" in str(e):
                     st.error("Sensei is out of breath! Please wait 10 seconds and try again.")
