@@ -53,19 +53,19 @@ if st.session_state.api_key and uploaded_file:
     vocab_text = get_pdf_text(uploaded_file)
 
     if st.button("Sensei, ask me a question!"):
-    with st.spinner("Sensei is writing..."):
-        # Use LITE here (Text only) to save your quota
-        response = client.models.generate_content(
-            model='gemini-2.5-flash-lite', 
-            contents=f"Context: {vocab_text[:1000]}. Ask a short N5 Japanese question."
-        )
-        st.session_state.current_question = response.text
-        st.rerun()
+        # These lines MUST be indented further than the 'if'
+        with st.spinner("Sensei is writing..."):
+            try:
+                txt_prompt = f"Using {vocab_text[:1000]}, ask a short N5 Japanese question. Format: Japanese, Romaji, English."
+                # We use Lite for the text to save your quota
+                response = client.models.generate_content(
+                    model='gemini-2.5-flash-lite', 
+                    contents=txt_prompt
+                )
+                st.session_state.current_question = response.text
+                st.rerun()
             except Exception as e:
-                if "429" in str(e):
-                    st.error("Sensei is out of breath! Please wait 10 seconds and try again.")
-                else:
-                    st.error(f"Text Error: {e}")
+                st.error(f"Text Error: {e}")
 
     if st.session_state.current_question:
         st.info(st.session_state.current_question)
