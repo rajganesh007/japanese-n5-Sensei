@@ -1,56 +1,65 @@
 import streamlit as st
 import google.generativeai as genai
 from PyPDF2 import PdfReader
+import time
 
-st.set_page_config(page_title="N5 Voice Coach", page_icon="🎤")
+st.set_page_config(page_title="N5 Voice Sensei", page_icon="🎤")
 st.title("🎤 N5 Japanese Voice Tutor")
 
-# Sidebar for Setup
+# --- Memory Setup ---
+if 'api_key' not in st.session_state: st.session_state.api_key = ""
+if 'current_question' not in st.session_state: st.session_state.current_question = ""
+
 with st.sidebar:
     st.header("Setup")
-    # This stores the key for the current session
-    if 'key' not in st.session_state:
-        st.session_state.key = ""
-    
-    api_key = st.text_input("Enter Gemini API Key:", value=st.session_state.key, type="password")
-    if api_key:
-        st.session_state.key = api_key
-        
+    st.session_state.api_key = st.text_input("Enter API Key:", value=st.session_state.api_key, type="password")
     uploaded_file = st.file_uploader("Upload N5 PDF", type="pdf")
 
 @st.cache_data
 def get_pdf_text(file_buffer):
     reader = PdfReader(file_buffer)
-    text = ""
-    for i in range(min(15, len(reader.pages))): # Keep it light for speed
-        text += reader.pages[i].extract_text()
-    return text
+    return "".join([p.extract_text() for p in reader.pages[:10]]) # First 10 pages for speed
 
-if st.session_state.key and uploaded_file:
-    # Use the stable v1 API (v1beta is deprecated)
-    genai.configure(api_key=st.session_state.key)
+# --- The App Logic ---
+if st.session_state.api_key and uploaded_file:
+    genai.configure(api_key=st.session_state.api_key)
     
-    # UPDATE: Using the 2026 stable model
-    model = genai.GenerativeModel('gemini-2.5-flash')
-    
-    with st.spinner("Sensei is reading..."):
-        vocab_text = get_pdf_text(uploaded_file)
-    
-    st.subheader("Talk to Sensei")
-    audio_value = st.audio_input("Record your Japanese")
+    # We use the TTS (Text-To-Speech) model variant for 2026
+    model = genai.GenerativeModel('gemini-2.5-flash-preview-tts')
+    vocab_text = get_pdf_text(uploaded_file)
 
-    if audio_value:
-        with st.spinner("Analyzing voice..."):
-            try:
-                audio_data = audio_value.read()
-                audio_part = {"mime_type": "audio/wav", "data": audio_data}
-                
-                prompt = f"Context: {vocab_text[:5000]}. Transcribe the audio, correct any N5 errors, and reply in Japanese."
-                
-                response = model.generate_content([prompt, audio_part])
-                st.success("Sensei says:")
-                st.markdown(response.text)
-            except Exception as e:
-                st.error(f"Error: {str(e)}. Try a shorter recording.")
+    # 1. BUTTON: Ask a New Question
+    if st.button("Sensei, ask me a question!"):
+        with st.spinner("Sensei is thinking..."):
+            prompt = f"Using this vocab: {vocab_text[:3000]}, ask me a simple N5 Japanese question. Speak clearly."
+            # Generate Audio Response
+            response = model.generate_content(prompt, config={'response_modalities': ['AUDIO']})
+            
+            # Extract and play audio
+            audio_data = response.candidates[0].content.parts[0].inline_data.data
+            st.session_state.current_question = response.text # Save text for reference
+            st.audio(audio_data, format="audio/wav", autoplay=True)
+            st.info(f"Sensei asked: {st.session_state.current_question}")
+
+    # 2. INPUT: Student Answers
+    st.divider()
+    st.subheader("Your Answer")
+    student_audio = st.audio_input("Respond to Sensei's question:")
+
+    if student_audio:
+        with st.spinner("Analyzing your answer..."):
+            # Feedback prompt
+            feedback_prompt = f"""
+            Context: {vocab_text[:3000]}
+            Sensei's Question: {st.session_state.current_question}
+            Student's Audio Answer provided.
+            TASK: 
+            1. Transcribe the student's answer.
+            2. Give feedback: Is it grammatically correct for N5? 
+            3. Provide the correct version in Japanese and English.
+            """
+            feedback_res = model.generate_content([feedback_prompt, {"mime_type": "audio/wav", "data": student_audio.read()}])
+            st.success("Feedback:")
+            st.write(feedback_res.text)
 else:
-    st.info("Please enter your API Key and upload your PDF in the sidebar.")
+    st.info("Paste your key and upload your PDF to start the lesson.")
