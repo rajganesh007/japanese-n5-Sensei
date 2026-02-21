@@ -21,13 +21,11 @@ def get_pdf_text(file_buffer):
     return "".join([p.extract_text() for p in reader.pages[:10]])
 
 def play_audio(client, text, slow=True):
-    """Reliable TTS using the beta modality-switch."""
     try:
-        pace = "very slowly" if slow else "at a natural pace"
-        # 2026 Fix: We request BOTH text and audio to prevent a 400 error 
-        # when the model generates its 'thoughts' as text first.
+        pace = "very slowly" if slow else "naturally"
+        # SWITCHED TO LITE for higher quota
         audio_res = client.models.generate_content(
-            model='gemini-2.5-flash', 
+            model='gemini-2.5-flash-lite', 
             contents=f"Say this {pace} in Japanese: {text}",
             config=types.GenerateContentConfig(
                 response_modalities=['TEXT', 'AUDIO'] 
@@ -54,14 +52,18 @@ if st.session_state.api_key and uploaded_file:
         with st.spinner("Sensei is writing..."):
             try:
                 txt_prompt = f"Using {vocab_text[:1000]}, ask a short N5 Japanese question. Format: Japanese, Romaji, English."
+                # SWITCHED TO LITE here too
                 response = client.models.generate_content(
-                    model='gemini-2.5-flash', 
+                    model='gemini-2.5-flash-lite', 
                     contents=txt_prompt
                 )
                 st.session_state.current_question = response.text
                 st.rerun()
             except Exception as e:
-                st.error(f"Text Error: {e}")
+                if "429" in str(e):
+                    st.error("Sensei is out of breath! Please wait 10 seconds and try again.")
+                else:
+                    st.error(f"Text Error: {e}")
 
     if st.session_state.current_question:
         st.info(st.session_state.current_question)
