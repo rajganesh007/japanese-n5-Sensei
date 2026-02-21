@@ -21,7 +21,7 @@ with st.sidebar:
     st.session_state.api_key = st.text_input("Enter API Key:", value=st.session_state.api_key, type="password")
     uploaded_file = st.file_uploader("Upload N5 PDF", type="pdf")
     st.divider()
-    dev_mode = st.checkbox("Mock Mode (Save Quota)", value=False, help="Skips API calls and uses fake data for UI testing.")
+    dev_mode = st.checkbox("Mock Mode (Save Quota)", value=False)
 
 # 4. Helper: PDF Text Extraction
 @st.cache_data
@@ -55,40 +55,46 @@ def call_gemini_with_retry(client, model, contents, max_retries=3):
             return client.models.generate_content(model=model, contents=contents)
         except Exception as e:
             if "429" in str(e) and i < max_retries - 1:
-                wait_time = 20 # Wait for bucket to refill
-                st.warning(f"Quota reached. Sensei is resting for {wait_time}s... (Attempt {i+1}/{max_retries})")
+                wait_time = 20 
+                st.warning(f"Quota reached. Waiting {wait_time}s...")
                 time.sleep(wait_time)
                 continue
             raise e
 
 # 7. Main Application Logic
 if st.session_state.api_key and uploaded_file:
+    # Initialize client
     client = genai.Client(api_key=st.session_state.api_key)
     vocab_text = get_pdf_text(uploaded_file)
+    
+    # 2026 Stable Model String
+    MODEL_ID = 'gemini-1.5-flash' 
 
     # --- Section: Question Generation ---
     if st.button("Sensei, ask me a question!"):
         if dev_mode:
-            st.session_state.current_question = "Japanese: これは本ですか？\nRomaji: Kore wa hon desu ka?"
+            st.session_state.current_question = "Japanese: これはなんですか？\nRomaji: Kore wa nan desu ka?"
             st.session_state.feedback = ""
             st.rerun()
         elif not vocab_text:
             st.error("Could not read PDF content.")
         else:
-            with st.spinner("Sensei is thinking..."):
+            with st.spinner("Sensei is writing..."):
                 try:
                     txt_prompt = (
                         f"Context: {vocab_text[:1200]}\n\n"
                         "Task: Ask an N5 Japanese question. NO ENGLISH.\n"
                         "Format exactly as:\nJapanese: [text]\nRomaji: [text]"
                     )
-                    # Using 1.5-flash for higher Free Tier RPM (Rate Per Minute)
-                    response = call_gemini_with_retry(client, 'gemini-1.5-flash', txt_prompt)
+                    # Use the stable model ID
+                    response = call_gemini_with_retry(client, MODEL_ID, txt_prompt)
                     st.session_state.current_question = response.text
                     st.session_state.feedback = ""
                     st.rerun()
                 except Exception as e:
-                    st.error(f"API Error: {str(e)}")
+                    # If 1.5-flash still fails, try the newer versioning
+                    st.error(f"Model Error. Try replacing MODEL_ID with 'gemini-1.5-flash-8b' or check API settings.")
+                    st.error(f"Details: {str(e)}")
 
     # --- Section: Question Display & Voice ---
     if st.session_state.current_question:
@@ -105,7 +111,7 @@ if st.session_state.api_key and uploaded_file:
         if student_audio:
             if st.button("Evaluate My Answer"):
                 if dev_mode:
-                    st.session_state.feedback = "Japanese: よくできました！\nRomaji: Yoku dekimashita!"
+                    st.session_state.feedback = "Japanese: よくできました。\nRomaji: Yoku dekimashita."
                 else:
                     with st.spinner("Sensei is listening..."):
                         try:
@@ -115,7 +121,7 @@ if st.session_state.api_key and uploaded_file:
                                  "Format:\nJapanese: [feedback]\nRomaji: [feedback]"),
                                 types.Part.from_bytes(data=student_audio.read(), mime_type="audio/wav")
                             ]
-                            response = call_gemini_with_retry(client, 'gemini-1.5-flash', fb_prompt)
+                            response = call_gemini_with_retry(client, MODEL_ID, fb_prompt)
                             st.session_state.feedback = response.text
                         except Exception as e:
                             st.error(f"Analysis Error: {e}")
