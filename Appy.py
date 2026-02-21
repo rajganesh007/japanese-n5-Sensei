@@ -30,107 +30,82 @@ def get_pdf_text(file_buffer):
         reader = PdfReader(file_buffer)
         raw_text = "".join([p.extract_text() for p in reader.pages[:5]])
         return re.sub(r'\s+', ' ', raw_text)
-    except Exception:
-        return ""
+    except Exception: return ""
 
-# 5. Helper: Voice Playback (Browser API)
+# 5. Helper: Voice Playback
 def play_audio(text, slow=True):
     rate = 0.6 if slow else 1.0
     safe_text = text.replace("'", "\\'").replace("\n", " ")
-    js_code = f"""
-    <script>
-    window.speechSynthesis.cancel();
-    var msg = new SpeechSynthesisUtterance('{safe_text}');
-    msg.lang = 'ja-JP';
-    msg.rate = {rate};
-    window.speechSynthesis.speak(msg);
-    </script>
-    """
+    js_code = f"<script>window.speechSynthesis.cancel(); var msg = new SpeechSynthesisUtterance('{safe_text}'); msg.lang = 'ja-JP'; msg.rate = {rate}; window.speechSynthesis.speak(msg);</script>"
     components.html(js_code, height=0)
 
-# 6. Helper: API Retry Logic (Handles 429 Errors)
-def call_gemini_with_retry(client, model, contents, max_retries=3):
-    for i in range(max_retries):
+# 6. Helper: Smart Model Caller with Fallbacks (The Fix)
+def call_gemini_smart(client, contents):
+    # Fallback order for 2026: 2.0 is current stable, 1.5-flash is legacy
+    models_to_try = ['gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-flash-8b']
+    
+    last_error = ""
+    for model_id in models_to_try:
         try:
-            return client.models.generate_content(model=model, contents=contents)
+            return client.models.generate_content(model=model_id, contents=contents)
         except Exception as e:
-            if "429" in str(e) and i < max_retries - 1:
-                wait_time = 20 
-                st.warning(f"Quota reached. Waiting {wait_time}s...")
-                time.sleep(wait_time)
-                continue
+            last_error = str(e)
+            if "404" in last_error:
+                continue # Try the next model in the list
+            if "429" in last_error:
+                st.warning("Quota limit hit. Pausing for 20s...")
+                time.sleep(20)
+                return client.models.generate_content(model=model_id, contents=contents)
             raise e
+    raise Exception(f"All models failed. Last error: {last_error}")
 
 # 7. Main Application Logic
 if st.session_state.api_key and uploaded_file:
-    # Initialize client
-    client = genai.Client(api_key=st.session_state.api_key)
+    # Explicitly setting API version to 'v1' to avoid v1beta 404s
+    client = genai.Client(api_key=st.session_state.api_key, http_options={'api_version': 'v1'})
     vocab_text = get_pdf_text(uploaded_file)
-    
-    # 2026 Stable Model String
-    MODEL_ID = 'gemini-1.5-flash' 
 
-    # --- Section: Question Generation ---
     if st.button("Sensei, ask me a question!"):
         if dev_mode:
             st.session_state.current_question = "Japanese: これはなんですか？\nRomaji: Kore wa nan desu ka?"
-            st.session_state.feedback = ""
             st.rerun()
-        elif not vocab_text:
-            st.error("Could not read PDF content.")
         else:
-            with st.spinner("Sensei is writing..."):
+            with st.spinner("Sensei is thinking..."):
                 try:
-                    txt_prompt = (
-                        f"Context: {vocab_text[:1200]}\n\n"
-                        "Task: Ask an N5 Japanese question. NO ENGLISH.\n"
-                        "Format exactly as:\nJapanese: [text]\nRomaji: [text]"
-                    )
-                    # Use the stable model ID
-                    response = call_gemini_with_retry(client, MODEL_ID, txt_prompt)
+                    prompt = f"Context: {vocab_text[:1200]}\nTask: Ask an N5 Japanese question. NO ENGLISH.\nFormat: Japanese: [text]\nRomaji: [text]"
+                    response = call_gemini_smart(client, prompt)
                     st.session_state.current_question = response.text
                     st.session_state.feedback = ""
                     st.rerun()
                 except Exception as e:
-                    # If 1.5-flash still fails, try the newer versioning
-                    st.error(f"Model Error. Try replacing MODEL_ID with 'gemini-1.5-flash-8b' or check API settings.")
-                    st.error(f"Details: {str(e)}")
+                    st.error(f"Error: {e}")
 
-    # --- Section: Question Display & Voice ---
     if st.session_state.current_question:
         st.info(st.session_state.current_question)
         if st.button("🔈 Hear Question"):
             match = re.search(r"Japanese:\s*(.*)", st.session_state.current_question)
-            jap_line = match.group(1) if match else st.session_state.current_question.split('\n')[0]
-            play_audio(jap_line, slow=True)
+            play_audio(match.group(1) if match else st.session_state.current_question)
 
         st.divider()
-        st.subheader("Your Answer")
-        student_audio = st.audio_input("Record your response")
+        student_audio = st.audio_input("Record response")
 
-        if student_audio:
-            if st.button("Evaluate My Answer"):
-                if dev_mode:
-                    st.session_state.feedback = "Japanese: よくできました。\nRomaji: Yoku dekimashita."
-                else:
-                    with st.spinner("Sensei is listening..."):
-                        try:
-                            fb_prompt = [
-                                (f"Question: {st.session_state.current_question}. "
-                                 "Evaluate student audio response. NO ENGLISH. "
-                                 "Format:\nJapanese: [feedback]\nRomaji: [feedback]"),
-                                types.Part.from_bytes(data=student_audio.read(), mime_type="audio/wav")
-                            ]
-                            response = call_gemini_with_retry(client, MODEL_ID, fb_prompt)
-                            st.session_state.feedback = response.text
-                        except Exception as e:
-                            st.error(f"Analysis Error: {e}")
+        if student_audio and st.button("Submit Answer"):
+            if dev_mode:
+                st.session_state.feedback = "Japanese: よくできました。\nRomaji: Yoku dekimashita."
+            else:
+                with st.spinner("Analyzing..."):
+                    try:
+                        fb_prompt = [
+                            f"Question: {st.session_state.current_question}. Evaluate student audio. NO ENGLISH. Format: Japanese: [text]\nRomaji: [text]",
+                            types.Part.from_bytes(data=student_audio.read(), mime_type="audio/wav")
+                        ]
+                        response = call_gemini_smart(client, fb_prompt)
+                        st.session_state.feedback = response.text
+                    except Exception as e:
+                        st.error(f"Analysis Error: {e}")
 
-    # --- Section: Feedback Display ---
     if st.session_state.feedback:
-        st.success("Feedback:")
-        st.write(st.session_state.feedback)
+        st.success(st.session_state.feedback)
         if st.button("🔈 Hear Feedback"):
-            fb_match = re.search(r"Japanese:\s*(.*)", st.session_state.feedback)
-            fb_text = fb_match.group(1) if fb_match else st.session_state.feedback.split('\n')[0]
-            play_audio(fb_text, slow=False)
+            match = re.search(r"Japanese:\s*(.*)", st.session_state.feedback)
+            play_audio(match.group(1) if match else st.session_state.feedback)
