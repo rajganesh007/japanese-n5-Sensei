@@ -87,22 +87,32 @@ if st.session_state.api_key and uploaded_file:
     if student_audio is not None:
         with st.spinner("Sensei is listening..."):
             try:
-                # Direct multimodal upload
-                feedback_res = client.models.generate_content(
-                    model='gemini-2.5-flash',
-                    contents=[
-                        f"Question: {st.session_state.current_question}. Correct the student's Japanese pronunciation and grammar.",
-                        types.Part.from_bytes(data=student_audio.read(), mime_type="audio/wav")
-                    ]
-                )
-                st.success("Sensei's Feedback:")
+                # 2026 PRO-TIP: We use 1.5-flash-8b for audio analysis 
+                # because it has a 1,500 RPD limit vs 2.5-flash's 20 RPD.
+                def analyze_with_retry(attempts=3):
+                    for i in range(attempts):
+                        try:
+                            return client.models.generate_content(
+                                model='gemini-1.5-flash-8b', 
+                                contents=[
+                                    f"Question: {st.session_state.current_question}. Correct the student's Japanese.",
+                                    types.Part.from_bytes(data=student_audio.read(), mime_type="audio/wav")
+                                ]
+                            )
+                        except Exception as e:
+                            if "429" in str(e) and i < attempts - 1:
+                                time.sleep(8) # Wait for the 7s cooldown
+                                continue
+                            raise e
+
+                feedback_res = analyze_with_retry()
+                st.success("Feedback:")
                 st.write(feedback_res.text)
                 
                 # Feedback Audio (First sentence only)
                 sentences = re.split(r'[.!?！？]', feedback_res.text)
                 if sentences:
                     play_audio(client, sentences[0], slow=False)
+                    
             except Exception as e:
                 st.error(f"Analysis Error: {e}")
-else:
-    st.info("Please enter your API Key and upload an N5 PDF to begin.")
