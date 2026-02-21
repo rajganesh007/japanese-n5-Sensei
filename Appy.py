@@ -87,13 +87,15 @@ if st.session_state.api_key and uploaded_file:
     if student_audio is not None:
         with st.spinner("Sensei is listening..."):
             try:
-                # 2026 PRO-TIP: We use 1.5-flash-8b for audio analysis 
-                # because it has a 1,500 RPD limit vs 2.5-flash's 20 RPD.
+                # 2026 Strategy: Use 2.5-Flash-Lite for high-quota audio analysis.
+                # It now supports multimodal (audio) inputs in the v1beta API.
                 def analyze_with_retry(attempts=3):
                     for i in range(attempts):
                         try:
+                            # Re-read buffer each time to avoid 'Seek' errors
+                            student_audio.seek(0) 
                             return client.models.generate_content(
-                                model='gemini-1.5-flash-8b', 
+                                model='gemini-2.5-flash-lite', 
                                 contents=[
                                     f"Question: {st.session_state.current_question}. Correct the student's Japanese.",
                                     types.Part.from_bytes(data=student_audio.read(), mime_type="audio/wav")
@@ -101,7 +103,7 @@ if st.session_state.api_key and uploaded_file:
                             )
                         except Exception as e:
                             if "429" in str(e) and i < attempts - 1:
-                                time.sleep(8) # Wait for the 7s cooldown
+                                time.sleep(5) # Standard wait for the 2026 minute-limit
                                 continue
                             raise e
 
@@ -109,9 +111,9 @@ if st.session_state.api_key and uploaded_file:
                 st.success("Feedback:")
                 st.write(feedback_res.text)
                 
-                # Feedback Audio (First sentence only)
+                # Feedback Audio
                 sentences = re.split(r'[.!?！？]', feedback_res.text)
-                if sentences:
+                if sentences and sentences[0].strip():
                     play_audio(client, sentences[0], slow=False)
                     
             except Exception as e:
