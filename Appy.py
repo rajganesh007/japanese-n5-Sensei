@@ -27,39 +27,31 @@ def get_pdf_text(file_buffer):
     return "".join([p.extract_text() for p in reader.pages[:10]])
 
 def play_audio(client, text, slow=True):
-    """Robust 2026 TTS handler: fetches and plays audio data."""
+    """2026 Optimized TTS: Uses the most stable configuration for audio."""
     try:
-        # Pacing and style instructions via prompt engineering
-        pace = "Say this very slowly and clearly" if slow else "Say this naturally"
-        full_prompt = f"{pace} in Japanese: {text}"
+        # Pacing is handled better via text instructions in the 2.5 models
+        pace_instruction = "VERY SLOWLY and clearly" if slow else "at a natural pace"
         
+        # We simplify the call to avoid the 'responseModalities' schema error
+        # By using the specific TTS model, it knows to return audio.
         audio_res = client.models.generate_content(
             model='gemini-2.5-flash-tts',
-            contents=full_prompt,
+            contents=f"Say this {pace_instruction} in Japanese: {text}",
+            # We use a simple config to avoid triggering version mismatches
             config=types.GenerateContentConfig(
-                response_modalities=['AUDIO'],
-                temperature=0.1 
+                temperature=0.1
             )
         )
         
-        # Search all response parts for the inline_data (audio bytes)
-        found_audio = False
-        if audio_res.candidates:
+        if audio_res.candidates and audio_res.candidates[0].content.parts:
             for part in audio_res.candidates[0].content.parts:
                 if part.inline_data:
                     st.audio(part.inline_data.data, format="audio/wav", autoplay=True)
-                    found_audio = True
-                    break
-        
-        if not found_audio:
-            st.warning("Sensei's voice is resting. (No audio generated).")
+                    return
+        st.warning("Sensei is thinking, but didn't speak. Try again!")
             
     except Exception as e:
-        if "429" in str(e):
-            st.error("Quota reached! Please wait 60 seconds.")
-        else:
-            st.error(f"Voice Error: {str(e)}")
-
+        st.error(f"Voice Error: {str(e)}")
 # 4. Main Application Logic
 if st.session_state.api_key and uploaded_file:
     # Initialize 2026 Client with stable v1 API version
