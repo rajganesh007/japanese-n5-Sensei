@@ -18,6 +18,7 @@ if 'feedback' not in st.session_state: st.session_state.feedback = ""
 if 'question_count' not in st.session_state: st.session_state.question_count = 0
 
 def reset_session():
+    """Clears state and increments counter to force a fresh UI and new AI context."""
     st.session_state.current_question = ""
     st.session_state.feedback = ""
     st.session_state.question_count += 1
@@ -37,13 +38,15 @@ with st.sidebar:
 def get_pdf_text(file_buffer):
     try:
         reader = PdfReader(file_buffer)
-        return [p.extract_text() for p in reader.pages if p.extract_text()]
+        # Store as a list of pages to allow random selection
+        return [p.extract_text() for p in reader.pages if p.extract_text() and len(p.extract_text()) > 100]
     except: return []
 
 def play_audio(text):
+    # Regex to find Japanese characters only
     jap_match = re.search(r"Japanese:\s*(.*)", text)
     speech_text = jap_match.group(1) if jap_match else text
-    safe_text = speech_text.replace("'", "\\'").replace("\n", " ")
+    safe_text = speech_text.split('\n')[0].replace("'", "\\'").replace('"', '\\"')
     js_code = f"<script>window.speechSynthesis.cancel(); var msg = new SpeechSynthesisUtterance('{safe_text}'); msg.lang = 'ja-JP'; window.speechSynthesis.speak(msg);</script>"
     components.html(js_code, height=0)
 
@@ -61,61 +64,21 @@ def call_gemini_smart(client, contents):
 # 5. Main Logic
 if (st.session_state.api_key or dev_mode) and (uploaded_file or dev_mode):
     client = None if dev_mode else genai.Client(api_key=st.session_state.api_key, http_options={'api_version': 'v1'})
-    all_pages = get_pdf_text(uploaded_file) if uploaded_file else ["Mock Data"]
+    all_pages = get_pdf_text(uploaded_file) if uploaded_file else ["Mock Context"]
 
+    # --- SCREEN 1: Ask Question ---
     if not st.session_state.current_question:
         if st.button("Sensei, ask me a question!", type="primary"):
             if dev_mode:
-                st.session_state.current_question = "Japanese: あなたの趣味は何ですか？\nRomaji: Anata no shumi wa nan desu ka?\nEnglish: What is your hobby?"
+                st.session_state.current_question = "Japanese: どこに住んでいますか？\nRomaji: Doko ni sunde imasu ka?\nEnglish: Where do you live?"
                 st.rerun()
             else:
-                with st.spinner("Sensei is searching..."):
-                    context_slice = random.choice(all_pages) if all_pages else "N5 Vocabulary"
+                with st.spinner("Sensei is flipping pages..."):
+                    # REPETITION FIX: Pick a random page so the context is never the same
+                    random_context = random.choice(all_pages) if all_pages else "N5 Grammar"
                     prompt = (
-                        f"Context: {context_slice[:1500]}\n"
-                        "Task: Ask ONE specific N5 Japanese question. Include English meaning.\n"
-                        "Format:\nJapanese: [sentence]\nRomaji: [sentence]\nEnglish: [meaning]"
-                    )
-                    response = call_gemini_smart(client, prompt)
-                    st.session_state.current_question = response.text
-                    st.rerun()
-
-    else:
-        st.info(st.session_state.current_question)
-        if st.button("🔈 Hear Question"):
-            play_audio(st.session_state.current_question)
-
-        st.divider()
-        student_audio = st.audio_input("Record response", key=f"v_{st.session_state.question_count}")
-
-        if student_audio and not st.session_state.feedback:
-            if st.button("Submit Answer"):
-                if dev_mode:
-                    # MOCK CHANGE: Now returns a correction so you can test the UI flow
-                    st.session_state.feedback = "Japanese: 残念ですが、違います。趣味について答えてください。\nRomaji: Zannen desu ga, chigaimasu. Shumi ni tsuite kotaete kudasai."
-                    st.rerun()
-                else:
-                    with st.spinner("Sensei is checking logic..."):
-                        # THE "HONEST SENSEI" PROMPT
-                        fb_prompt = [
-                            f"Question Asked: {st.session_state.current_question}\n"
-                            "STRICT EVALUATION TASK:\n"
-                            "1. If the student's answer is logically incorrect (e.g., they said 'apple' when asked for 'hobby'), you MUST say it is wrong.\n"
-                            "2. Be a polite but honest Japanese teacher. Correct them if the context is wrong.\n"
-                            "3. Do NOT say 'Good' or 'Totemo ii' unless they actually answered the question correctly.\n"
-                            "Format: Japanese: [polite correction]\nRomaji: [polite correction]",
-                            types.Part.from_bytes(data=student_audio.read(), mime_type="audio/wav")
-                        ]
-                        response = call_gemini_smart(client, fb_prompt)
-                        st.session_state.feedback = response.text
-                        st.rerun()
-
-        if st.session_state.feedback:
-            st.success("Sensei's Feedback:")
-            st.write(st.session_state.feedback)
-            f_col1, f_col2 = st.columns(2)
-            with f_col1:
-                if st.button("🔈 Hear Feedback"):
-                    play_audio(st.session_state.feedback)
-            with f_col2:
-                st.button("Next Question ➔", on_click=reset_session, type="primary")
+                        f"Context: {random_context[:1000]}\n"
+                        f"Random Salt: {random.random()}\n"
+                        "Task: Ask a unique N5 Japanese question based on the context. "
+                        "You MUST provide the response in THREE lines: Japanese, Romaji, and English.\n"
+                        "Format:\nJapanese: [text]\nRomaji: [text]\n
