@@ -20,31 +20,36 @@ def get_pdf_text(file_buffer):
     reader = PdfReader(file_buffer)
     return "".join([p.extract_text() for p in reader.pages[:10]])
 
+import streamlit.components.v1 as components
+
 def play_audio(client, text, slow=True):
+    """Hybrid TTS: Tries Gemini first, falls back to Browser Voice."""
     try:
-        pace = "very slowly" if slow else "at a natural pace"
-        # 2026 FIX: Use the 'full' Flash model ONLY for audio tasks.
-        # This model supports the AUDIO modality.
+        # 1. Attempt Gemini Voice (High Quality)
         audio_res = client.models.generate_content(
             model='gemini-2.5-flash', 
-            contents=f"Say this {pace} in Japanese: {text}",
-            config=types.GenerateContentConfig(
-                response_modalities=['AUDIO'] 
-            )
+            contents=f"Say this very slowly in Japanese: {text}",
+            config=types.GenerateContentConfig(response_modalities=['AUDIO'])
         )
-        
-        if audio_res.candidates:
-            for part in audio_res.candidates[0].content.parts:
-                if part.inline_data:
-                    st.audio(part.inline_data.data, format="audio/wav", autoplay=True)
-                    return
-        st.warning("Voice is currently unavailable.")
+        if audio_res.candidates and audio_res.candidates[0].content.parts[0].inline_data:
+            st.audio(audio_res.candidates[0].content.parts[0].inline_data.data, format="audio/wav", autoplay=True)
+            return
+            
     except Exception as e:
         if "429" in str(e):
-            st.error("Audio quota reached. Sensei's voice needs a break, but you can still read the text!")
+            st.warning("Sensei is tired! Switching to system voice...")
+            # 2. Fallback: Use the browser's built-in Japanese voice (Unlimited Quota)
+            js_code = f"""
+            <script>
+            var msg = new SpeechSynthesisUtterance('{text}');
+            msg.lang = 'ja-JP';
+            msg.rate = {0.6 if slow else 1.0};
+            window.speechSynthesis.speak(msg);
+            </script>
+            """
+            components.html(js_code, height=0)
         else:
-            st.error(f"Voice Error: {str(e)}")
-
+            st.error(f"Voice Error: {e}")
 if st.session_state.api_key and uploaded_file:
     # 2026 Setup: Simplified client. The SDK defaults to v1beta 
     # for gemini-2.5 models if version is not specified.
